@@ -1,0 +1,472 @@
+{
+  "name": "WhatsApp Restaurant AI Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "restaurant-whatsapp-agent",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "Webhook_Inbound_WhatsApp",
+      "name": "Inbound WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst from = body.from || body.From || body.wa_id || body.phone || 'unknown';\nconst text = (body.message || body.Body || body.text || '').toString().trim();\n\nreturn [{\n  json: {\n    from,\n    text,\n    lowerText: text.toLowerCase(),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "Code_Normalize",
+      "name": "Normalize Incoming Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt = $json.lowerText || '';\n\nlet intent = 'fallback';\nif (/(menu|card|items|food list)/i.test(txt)) intent = 'menu';\nelse if (/(order|i want|book|buy|place)/i.test(txt)) intent = 'order';\nelse if (/(track|status|where)/i.test(txt)) intent = 'track';\nelse if (/(last order|previous order|recent order)/i.test(txt)) intent = 'last_order';\n\nconst confirmationPreference = /(email|mail)/i.test(txt) ? 'email' : 'call';\nconst requestedTrackId = (txt.match(/trk-[a-z0-9-]+/i) || [null])[0];\n\nreturn [{\n  json: {\n    ...$json,\n    intent,\n    confirmationPreference,\n    requestedTrackId\n  }\n}];"
+      },
+      "id": "Code_Detect_Intent",
+      "name": "Detect Intent (AI-like NLU)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "menu",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "order",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "track",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "last_order",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 5
+        }
+      },
+      "id": "Switch_Intent",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1020,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const menu = [\n  '🍽️ *Today\\'s Menu*',\n  '1) Margherita Pizza - ₹249',\n  '2) Paneer Tikka - ₹199',\n  '3) Veg Biryani - ₹229',\n  '4) Pasta Alfredo - ₹219',\n  '5) Chocolate Brownie - ₹129',\n  '',\n  'Reply in this format to place order:',\n  '*order: 2x paneer tikka, 1x brownie*',\n  '',\n  'You can also ask: *track TRK-xxxx* or *last order*.'\n].join('\\n');\n\nreturn [{ json: { ...$json, replyText: menu } }];"
+      },
+      "id": "Code_Menu",
+      "name": "Build Menu Card Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1290,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt = $json.text || '';\nconst staticData = getWorkflowStaticData('global');\n\nif (!staticData.orders) staticData.orders = {};\nif (!staticData.lastByPhone) staticData.lastByPhone = {};\n\nconst generatedTrackId = `TRK-${Date.now().toString(36).toUpperCase()}`;\nconst orderText = txt.replace(/order\\s*:?/i, '').trim() || '1x chef special';\n\nconst orderRecord = {\n  trackId: generatedTrackId,\n  customerPhone: $json.from,\n  items: orderText,\n  status: 'Order placed',\n  createdAt: new Date().toISOString()\n};\n\nstaticData.orders[generatedTrackId] = orderRecord;\nstaticData.lastByPhone[$json.from] = generatedTrackId;\n\nconst replyText = [\n  '✅ Your order is placed successfully!',\n  `🧾 Items: ${orderText}`,\n  `🆔 Track ID: ${generatedTrackId}`,\n  `📞 Confirmation mode: ${$json.confirmationPreference.toUpperCase()}`,\n  '',\n  'Use this anytime: *track ' + generatedTrackId + '*'\n].join('\\n');\n\nreturn [{ json: { ...$json, trackId: generatedTrackId, orderText, replyText } }];"
+      },
+      "id": "Code_Create_Order",
+      "name": "Create Order + Track ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1290,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "pref_email",
+              "leftValue": "={{$json.confirmationPreference}}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "If_Confirmation_Mode",
+      "name": "Confirmation via Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [
+        1550,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.CONFIRMATION_EMAIL_WEBHOOK_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"to\": $json.from + \"@customer-mail.local\",\n  \"subject\": \"Restaurant order confirmation\",\n  \"text\": \"Order \" + $json.trackId + \" has been placed for: \" + $json.orderText\n}",
+        "options": {}
+      },
+      "id": "HTTP_Send_Email_Task",
+      "name": "Send Confirmation Email Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        180
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.CONFIRMATION_CALL_WEBHOOK_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone\": $json.from,\n  \"message\": \"Your restaurant order \" + $json.trackId + \" is confirmed.\"\n}",
+        "options": {}
+      },
+      "id": "HTTP_Send_Call_Task",
+      "name": "Create Confirmation Call Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = getWorkflowStaticData('global');\nconst track = ($json.requestedTrackId || '').toUpperCase();\nconst record = track ? staticData.orders?.[track] : null;\n\nconst replyText = record\n  ? [\n      `📦 Status for ${track}:`,\n      `• Items: ${record.items}`,\n      `• Current status: ${record.status}`,\n      `• Ordered at: ${record.createdAt}`\n    ].join('\\n')\n  : 'I could not find that Track ID. Please send in format: *track TRK-XXXX*';\n\nreturn [{ json: { ...$json, replyText } }];"
+      },
+      "id": "Code_Track",
+      "name": "Track Order Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1290,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = getWorkflowStaticData('global');\nconst lastTrack = staticData.lastByPhone?.[$json.from];\nconst record = lastTrack ? staticData.orders?.[lastTrack] : null;\n\nconst replyText = record\n  ? [\n      '🕒 *Your Last Order*',\n      `Track ID: ${record.trackId}`,\n      `Items: ${record.items}`,\n      `Status: ${record.status}`,\n      `Time: ${record.createdAt}`\n    ].join('\\n')\n  : 'No previous order found for this number. Send *menu* to start.';\n\nreturn [{ json: { ...$json, replyText } }];"
+      },
+      "id": "Code_Last_Order",
+      "name": "Fetch Last Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1290,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const replyText = [\n  'Hi 👋 I am your restaurant ordering assistant.',\n  '',\n  'Try one of these:',\n  '• *menu* (see menu card)',\n  '• *order: 2x paneer tikka, 1x brownie*',\n  '• *track TRK-XXXX*',\n  '• *last order*'\n].join('\\n');\n\nreturn [{ json: { ...$json, replyText } }];"
+      },
+      "id": "Code_Fallback",
+      "name": "Fallback Help Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1290,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.WHATSAPP_SEND_MESSAGE_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": $json.from,\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": $json.replyText\n  }\n}",
+        "options": {}
+      },
+      "id": "HTTP_Send_WhatsApp",
+      "name": "Send WhatsApp Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1610,
+        560
+      ],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "Inbound WhatsApp Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Incoming Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Incoming Message": {
+      "main": [
+        [
+          {
+            "node": "Detect Intent (AI-like NLU)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Intent (AI-like NLU)": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Build Menu Card Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Order + Track ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Track Order Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Last Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fallback Help Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Menu Card Reply": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Order + Track ID": {
+      "main": [
+        [
+          {
+            "node": "Confirmation via Email?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmation via Email?": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Email Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Confirmation Call Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Track Order Status": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Last Order": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Help Reply": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "restaurant-whatsapp-agent"
+}
